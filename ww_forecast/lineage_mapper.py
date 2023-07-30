@@ -58,18 +58,20 @@ class LineageMapper:
 
         if self.clade_lookup is not None:
             self.consensus_barcodes = self.get_consensus_barcodes(consensus_type)
-        
-        print(self.consensus_barcodes)
 
-        # patse BED file 
+        # parse BED file 
         if regions:
-            # Code to load regions
-            pass
+            self.regions = self.read_bed(regions)
+        else:
+            self.regions = None
 
         # parse mutation selects
         if mutations:
-            # Code to load specific mutations
-            pass
+            self.mutations = self.read_mutations(mutations)
+            raise ValueError("mutations not currently implemented")
+        else:
+            self.mutations = None
+        
 
 
     def get_consensus_barcodes(self, consensus_type: str) -> pd.DataFrame:
@@ -203,19 +205,18 @@ class LineageMapper:
         return regions
 
 
-    def read_mutations(self, mutations_file: str) -> Set[str]:
+    def read_mutations(self, mutations_file: str):
         """
-        Reads a mutations file and returns a set of mutations.
-        
-        Args:
-        mutations_file (str): Path to the mutations file.
+        Reads in the mutations file and returns a DataFrame.
 
+        Args:
+        mutations_file (str): Path to the csv file containing mutations.
+        
         Returns:
-        A set of mutations.
+        pandas DataFrame: DataFrame with mutation data.
         """
-        with open(mutations_file, 'r') as f:
-            mutations = set(line.strip() for line in f)
-        return mutations
+        mutations = pd.read_csv(mutations_file, index_col=None, header=0)
+        return mutations.set_index('NUC')['AA'].to_dict()
 
 
     def write(self, prefix: str):

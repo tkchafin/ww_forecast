@@ -198,7 +198,7 @@ def parseArgs():
     parser.add_argument('-m', '--mutations',
                         default=None,
                         type=str,
-                        help='Path to the TXT file listing specific mutations to consider')
+                        help='Path to the csv file listing specific mutations to consider')
 
     parser.add_argument('--consensus',
                         default="mode",

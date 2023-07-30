@@ -3,6 +3,7 @@ PNS_data/
 prevalence_data/
 variants_data/
 lineage_metadata/
+annotations/
 test_*
 
 # Byte-compiled / optimized / DLL files
