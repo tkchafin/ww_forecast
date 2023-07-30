@@ -18,7 +18,10 @@ def main():
         threshold = params.threshold, 
         abundance_col = params.abundance_col, 
         peak_threshold = params.peak_threshold, 
-        prevalence_col = params.prevalence_col)
+        prevalence_col = params.prevalence_col, 
+        serial_interval = params.serial_interval, 
+        window_width = params.window_width, 
+        treedb = params.treedb)
 
 
     model_data.pretty_print('lineages', precision=5)
@@ -156,6 +159,21 @@ def parseArgs():
                         default='linear',
                         type=str,
                         help='Method for interpolation')
+
+    parser.add_argument('--serial_interval',
+                        default=5.5,
+                        type=float,
+                        help='The average time between successive cases in a chain transmission')
+
+    parser.add_argument('--window_width',
+                        default=56,
+                        type=int,
+                        help='The width of the window for calculating growth rates')
+
+    parser.add_argument('--treedb',
+                        default=None,
+                        type=str,
+                        help='Path to the database file for calculating phylogenetic diversity')
 
     return parser.parse_args()
 

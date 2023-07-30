@@ -2,7 +2,9 @@ import os
 import sys 
 
 import pandas as pd
+from typing import List, Union, Optional, Generator, Tuple 
 
+from . import feature_engineering as fe
 class ModelData:
     """
     Class to load, preprocess and interpolate lineage and prevalence data.
@@ -26,7 +28,10 @@ class ModelData:
             abundance_col: str, 
             threshold: float = 0.005, 
             peak_threshold: float = 0.01, 
-            interpolation_method: str = 'linear'
+            interpolation_method: str = 'linear',
+            serial_interval: float = 5.5, 
+            window_width: int = 14, 
+            treedb: Optional[str] = None
             ):
         """
         Initialize ModelData with files and column names. Performs preprocessing and interpolation on data.
@@ -39,6 +44,9 @@ class ModelData:
         threshold (float, optional): Threshold for abundance filtering. Defaults to 0.005.
         peak_threshold (float, optional): Threshold for peak filtering. Defaults to 0.01.
         interpolation_method (str, optional): Interpolation method for filling missing dates. Defaults to 'linear'.
+        serial_interval (float, optional): The average time between successive cases in a chain transmission. Defaults to 5.5.
+        window_width (int, optional): The width of the window for calculating growth rates. Defaults to 56.
+        treedb (str, optional): Path to the database file for calculating phylogenetic diversity. Defaults to None.
         """
         self.lineages = self._read_csv(lineages_file, ['Lineage', abundance_col])
         self.prevalence = self._read_csv(prevalence_file, [prevalence_col])
@@ -47,6 +55,9 @@ class ModelData:
         self.threshold = threshold
         self.peak_threshold = peak_threshold
         self.interpolation_method = interpolation_method
+        self.serial_interval = serial_interval
+        self.window_width = window_width
+        self.treedb = treedb
 
         # pre-processing 
         if self.peak_threshold > 0.0:
@@ -57,12 +68,39 @@ class ModelData:
         self.lineages.sort_values(by=['Lineage', 'Date'], inplace=True)
         self.prevalence.sort_values(by='Date', inplace=True)
 
-        # # perform linear interpolation 
+        # interpolation 
         self.lineages = self.interpolation(self.lineages, group="Lineage", var=self.abundance_col)
         self.prevalence = self.interpolation(self.prevalence, var=self.prevalence_col)
 
+        # create features 
+        self.features = self.get_features()
 
-    def interpolation(self, df: DataFrame, var: str, group: Optional[str] = None) -> DataFrame:
+
+    def get_features(self):
+
+        # features related to growth rate
+        growth = fe.get_growth_rate_features(
+            self.lineages, 
+            window_width = self.window_width, 
+            threshold = self.threshold,
+            abundance_col = self.abundance_col,
+            serial_interval = 5.5,
+            aggregator_funcs= ["all"]
+        )
+        print(growth)
+
+        # features from raw abundances 
+        abundance = fe.get_abundance_features(
+            self.lineages, 
+            threshold=self.threshold,
+            abundance_col = self.abundance_col,
+            aggregator_funcs = ["all"]
+        )
+        print(abundance)
+        sys.exit()
+
+
+    def interpolation(self, df: pd.DataFrame, var: str, group: Optional[str] = None) -> pd.DataFrame:
         """
         Performs linear interpolation for missing dates in the data.
         
@@ -162,7 +200,7 @@ class ModelData:
         self.prevalence = self.prevalence[self.prevalence['Date'] >= start_date]
 
 
-    def _read_csv(self, file_path, keep_cols):
+    def _read_csv(self, file_path: str, keep_cols: List[str]) -> pd.DataFrame:
         """
         This method reads a CSV file and returns a dataframe with necessary columns and converted date.
 
