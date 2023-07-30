@@ -67,8 +67,8 @@ class LineageMapper:
 
         # parse mutation selects
         if mutations:
-            self.mutations = self.read_mutations(mutations)
-            raise ValueError("mutations not currently implemented")
+            #self.mutations = self.read_mutations(mutations)
+            raise NotImplementedError("mutations not currently implemented")
         else:
             self.mutations = None
         
