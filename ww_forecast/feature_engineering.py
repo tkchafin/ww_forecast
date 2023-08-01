@@ -9,13 +9,68 @@ from scipy.optimize import curve_fit
 from typing import Generator, Tuple
 
 from . import utils as utils
+from . import lineage_mapper as lm
+
+
+############ Genetic diversity metrics ##############
+
+
+def get_genetic_diversity_features(
+        df: pd.DataFrame, 
+        lineage_mapper: lm.LineageMapper, 
+        threshold: float = 0.001,                     
+        abundance_col: str = "Weighted Abundance") -> pd.DataFrame:
+    """
+    Calculate the diversity metrics for each date.
+
+    Args:
+        df (pd.DataFrame): The dataframe to process. 
+                           Contains dates and corresponding lineage abundances.
+        lineage_mapper (LineageMapper): The LineageMapper object.
+        threshold (float): Minimum abundance to consider a lineage for a given date.
+        abundance_col (str): Name of the column representing abundance.
+
+    Returns:
+        pd.DataFrame: A dataframe with the calculated data. 
+                      Each row corresponds to a unique date, 
+                      and the columns correspond to the diversity metric for each gene and the whole genome. 
+                      Column names are in the format: {gene_name}_Pi or Genome_Pi.
+    """
+    
+    # Initialize an empty DataFrame to store the results
+    diversity_df = pd.DataFrame()
+
+    # Make a copy of the input DataFrame to avoid modifying it
+    df_copy = df.copy()
+
+    # Set 'Date' as the DataFrame index
+    df_copy.set_index('Date', inplace=True)
+
+    # Filter out lineages below threshold
+    df_copy = df_copy[df_copy[abundance_col] > threshold]
+
+    # For each unique date in df_copy
+    for date in df_copy.index.unique():
+
+        # Subset the df_copy for the given date
+        date_df = df_copy.loc[date]
+
+        # Calculate the diversity metrics using the LineageMapper method
+        pi_dict = lineage_mapper.get_nucleotide_diversity(date_df, abundance_col)
+
+        # Add the results to the diversity_df DataFrame
+        for column, value in pi_dict.items():
+            diversity_df.loc[date, column] = value
+
+    return diversity_df.fillna(0.0)
+
 
 
 ######## Summary metrics for raw abundances #########
 
-def get_abundance_features(df: pd.DataFrame, threshold: float, 
-                           abundance_col: str, 
-                           aggregator_funcs: List[str]) -> pd.DataFrame:
+def get_abundance_features(df: pd.DataFrame, threshold: float = 0.001, 
+                           abundance_col: str = "Weighted Abundance", 
+                           aggregator_funcs: List[str] = ["all"]) -> pd.DataFrame:
     """
     Calculate various statistics about lineage abundance.
 
@@ -67,7 +122,7 @@ def get_abundance_features(df: pd.DataFrame, threshold: float,
     new_col_names = [f'Abundance_{func}' for func in funcs_to_apply]
     agg_df.columns = new_col_names
 
-    return agg_df.reset_index()
+    return agg_df
 
 
 
@@ -159,7 +214,7 @@ def get_growth_rate_features(
         agg_df_other.name = f'Advantage_{func}'
         agg_df = pd.merge(agg_df, agg_df_other.reset_index(), how='left', on='Date')
 
-    return agg_df
+    return agg_df.set_index('Date', inplace=False)
 
 
 

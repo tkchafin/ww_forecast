@@ -13,15 +13,16 @@ def main():
     params = parseArgs()
 
     # load lineage metadata 
-    lineage_map = LineageMapper(
-        lineages=params.lineages,
-        usher_barcodes=params.usher_barcodes,
-        curated_lineages=params.curated_lineages,
-        regions=params.regions,
-        mutations=params.mutations, 
-        consensus_type=params.consensus
-    )
-    sys.exit()
+    if params.features_file is not None:
+        lineage_map = LineageMapper(
+            lineages=params.lineages,
+            usher_barcodes=params.usher_barcodes,
+            curated_lineages=params.curated_lineages,
+            regions=params.regions,
+            mutations=params.mutations, 
+            consensus_type=params.consensus
+        )
+        lineage_map.write("test")
 
     # load input features 
     model_data = ModelData(
@@ -32,12 +33,12 @@ def main():
         peak_threshold = params.peak_threshold, 
         prevalence_col = params.prevalence_col, 
         serial_interval = params.serial_interval, 
-        window_width = params.window_width)
+        window_width = params.window_width, 
+        features_file=params.features_file,
+        lineage_map = lineage_map)
 
 
-    model_data.pretty_print('lineages', precision=5)
-    model_data.pretty_print('prevalence')
-    model_data.write("test")
+    model_data.pretty_print('features', precision=5)
 
     # data = DataPreprocessor(summary_file, metadata_file, nationalavg_file)
     # #data.lineages = data.sort_normalise_filter(data.summarize_levels(data.lineages.copy(), 2), threshold=0.01)
@@ -157,7 +158,7 @@ def parseArgs():
                         help='Name of the abundance column in the lineages file')
 
     parser.add_argument('-t','--threshold',
-                        default=0.005,
+                        default=0.001,
                         type=float,
                         help='Threshold lineage abundance to retain')
 
@@ -204,6 +205,11 @@ def parseArgs():
                         default="mode",
                         type=str,
                         help='mean, mode, or strict')
+
+    parser.add_argument('-f','--features_file',
+                        default=None,
+                        type=str,
+                        help='Path to the pre-computed features csv file')
 
 
     return parser.parse_args()

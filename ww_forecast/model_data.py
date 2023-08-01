@@ -5,20 +5,11 @@ import pandas as pd
 from typing import List, Union, Optional, Generator, Tuple 
 
 from . import feature_engineering as fe
+from . import lineage_mapper as lm
 class ModelData:
     """
     Class to load, preprocess and interpolate lineage and prevalence data.
-    
-    Attributes:
-    lineages (pd.DataFrame): Lineage data.
-    prevalence (pd.DataFrame): Prevalence data.
-    prevalence_col (str): Column name for prevalence values.
-    abundance_col (str): Column name for abundance values.
-    threshold (float): Threshold for abundance filtering.
-    peak_threshold (float): Threshold for peak filtering.
-    interpolation_method (str): Interpolation method for filling missing dates.
     """
-
 
     def __init__(
             self, 
@@ -26,12 +17,14 @@ class ModelData:
             prevalence_file: str, 
             prevalence_col: str, 
             abundance_col: str, 
+            lineage_map: Optional[lm.LineageMapper] = None,
             threshold: float = 0.005, 
             peak_threshold: float = 0.01, 
             interpolation_method: str = 'linear',
             serial_interval: float = 5.5, 
-            window_width: int = 14, 
-            treedb: Optional[str] = None
+            window_width: int = 14,
+            prefix: str = "test",
+            features_file: Optional[str] = None
             ):
         """
         Initialize ModelData with files and column names. Performs preprocessing and interpolation on data.
@@ -41,23 +34,26 @@ class ModelData:
         prevalence_file (str): Path to the prevalence file.
         prevalence_col (str): Column name for prevalence values in the prevalence file.
         abundance_col (str): Column name for abundance values in the lineage file.
+        lineage_map (LineageMapper, optional): LineageMapper instance.
         threshold (float, optional): Threshold for abundance filtering. Defaults to 0.005.
         peak_threshold (float, optional): Threshold for peak filtering. Defaults to 0.01.
         interpolation_method (str, optional): Interpolation method for filling missing dates. Defaults to 'linear'.
         serial_interval (float, optional): The average time between successive cases in a chain transmission. Defaults to 5.5.
-        window_width (int, optional): The width of the window for calculating growth rates. Defaults to 56.
-        treedb (str, optional): Path to the database file for calculating phylogenetic diversity. Defaults to None.
+        window_width (int, optional): The width of the window for calculating growth rates. Defaults to 14.
+        prefix (str, optional): Prefix for outputs. Defaults to test.
+        features_file (str, Optional): File to read features from, if they are pre-existing. Defaults to None.
         """
         self.lineages = self._read_csv(lineages_file, ['Lineage', abundance_col])
         self.prevalence = self._read_csv(prevalence_file, [prevalence_col])
         self.prevalence_col = prevalence_col
         self.abundance_col = abundance_col
+        self.lineage_map = lineage_map
         self.threshold = threshold
         self.peak_threshold = peak_threshold
         self.interpolation_method = interpolation_method
         self.serial_interval = serial_interval
         self.window_width = window_width
-        self.treedb = treedb
+        self.prefix = prefix
 
         # pre-processing 
         if self.peak_threshold > 0.0:
@@ -73,11 +69,52 @@ class ModelData:
         self.prevalence = self.interpolation(self.prevalence, var=self.prevalence_col)
 
         # create features 
-        self.features = self.get_features()
+        if features_file is None:
+            # compute features 
+            self.features = self.get_features()
+        else:
+            # load features from file
+            self.features = pd.read_csv(features_file, index_col=0, header=0)
+
+        # split prevalence data 
+        features_start_date = self.features.index.min()
+        features_end_date = self.features.index.max()
+
+        self.validation_prevalence = self.prevalence[self.prevalence['Date'] > features_end_date]
+        self.prevalence = self.prevalence[(self.prevalence['Date'] >= features_start_date) & (self.prevalence['Date'] <= features_end_date)]
+
+        # write outputs 
+        self.write(self.prefix)
+        if self.lineage_map:
+            self.lineage_map.write(self.prefix)
+        if features_file is None:
+            self.write_features(self.prefix)
+        
+
+    def drop_features(self, features_to_remove):
+        """
+        Removes specified features from the features dataframe.
+
+        Args:
+        features_to_remove (str or list): The feature(s) to remove.
+
+        Returns:
+        None
+        """
+        if isinstance(features_to_remove, str):
+            features_to_remove = [features_to_remove]  # convert to list
+
+        non_existent_features = [f for f in features_to_remove if f not in self.features.columns]
+
+        if non_existent_features:
+            print(f"Warning: The following features are not in the dataframe and cannot be removed: {non_existent_features}")
+
+        # Remove the features
+        self.features = self.features.drop(columns=[f for f in features_to_remove if f in self.features.columns], errors='ignore')
 
 
     def get_features(self):
-
+        features = []
         # features related to growth rate
         growth = fe.get_growth_rate_features(
             self.lineages, 
@@ -87,7 +124,7 @@ class ModelData:
             serial_interval = 5.5,
             aggregator_funcs= ["all"]
         )
-        print(growth)
+        features.append(growth)
 
         # features from raw abundances 
         abundance = fe.get_abundance_features(
@@ -96,8 +133,21 @@ class ModelData:
             abundance_col = self.abundance_col,
             aggregator_funcs = ["all"]
         )
-        print(abundance)
-        sys.exit()
+        features.append(abundance)
+
+        # genetic diversity metrics 
+        if self.lineage_map is not None:
+            gene_div = fe.get_genetic_diversity_features(
+                self.lineages,
+                threshold = self.threshold,
+                lineage_mapper = self.lineage_map,
+                abundance_col = self.abundance_col
+            )
+            features.append(gene_div)
+        
+        # return joined features
+        features_df = features[0].join(features[1:])
+        return(features_df)
 
 
     def interpolation(self, df: pd.DataFrame, var: str, group: Optional[str] = None) -> pd.DataFrame:
@@ -244,8 +294,10 @@ class ModelData:
             df = self.lineages
         elif data_type == 'prevalence':
             df = self.prevalence
+        elif data_type == 'features':
+            df = self.features
         else:
-            print("Invalid data type. Please specify either 'lineages' or 'prevalence'.")
+            print("Invalid data type. Please specify either 'lineages', 'prevalence', or 'features'.")
             return
 
         with pd.option_context('display.max_rows', max_rows,
@@ -271,8 +323,10 @@ class ModelData:
             df = self.lineages
         elif data_type == 'prevalence':
             df = self.prevalence
+        elif data_type == 'features':
+            df = self.features
         else:
-            print("Invalid data type. Please specify either 'lineages' or 'prevalence'.")
+            print("Invalid data type. Please specify either 'lineages', 'prevalence', or 'features'.")
             return
 
         print(f"\nFirst {head_rows} rows:")
@@ -283,7 +337,7 @@ class ModelData:
         print(df.describe())
     
 
-    def write(self, prefix):
+    def write(self, prefix: str):
         """
         Writes the 'lineages' and 'prevalence' dataframes to CSV files.
 
@@ -297,6 +351,10 @@ class ModelData:
         self.lineages.to_csv(f"{prefix}_abundance.csv", index=True)
         self.prevalence.to_csv(f"{prefix}_prevalence.csv", index=True)
 
+
+    def write_features(self, prefix: str):
+        output_file = f'{prefix}_features.csv'
+        self.features.to_csv(output_file, index=True)
 
     # def plot(self, train_proportion=None):
     #     fig = plt.figure(figsize=(12, 6))
