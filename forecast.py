@@ -7,13 +7,17 @@ from pathlib import Path
 
 from ww_forecast.model_data import ModelData
 from ww_forecast.lineage_mapper import LineageMapper
+import ww_forecast.feature_selection as fs
 
 def main():
 
     params = parseArgs()
 
+    #############################################################
+    # 1. Reading in and creating features 
+
     # load lineage metadata 
-    if params.features_file is not None:
+    if params.features_file is None:
         lineage_map = LineageMapper(
             lineages=params.lineages,
             usher_barcodes=params.usher_barcodes,
@@ -22,7 +26,9 @@ def main():
             mutations=params.mutations, 
             consensus_type=params.consensus
         )
-        lineage_map.write("test")
+        lineage_map.write(params.prefix)
+    else:
+        lineage_map = None
 
     # load input features 
     model_data = ModelData(
@@ -35,103 +41,50 @@ def main():
         serial_interval = params.serial_interval, 
         window_width = params.window_width, 
         features_file=params.features_file,
-        lineage_map = lineage_map)
+        lineage_map = lineage_map, 
+        prefix=params.prefix)
 
+    if params.extra_features is not None:
+        model_data.add_features(params.extra_features, impute=True)
 
-    model_data.pretty_print('features', precision=5)
+    # make some plots 
+    model_data.plot_features_pairwise()
+    model_data.plot_features_vs_prevalence()
+    model_data.plot_features_vs_prevalence_timeseries()
 
-    # data = DataPreprocessor(summary_file, metadata_file, nationalavg_file)
-    # #data.lineages = data.sort_normalise_filter(data.summarize_levels(data.lineages.copy(), 2), threshold=0.01)
-    # print(data.lineages)
-    # print(data.prevalence)
-    # print(data.prevalence_validation)
-    # #data.plot(0.8)
+    #############################################################
+    # 2. Feature selection and transformation 
 
-    # model = SARIMAXModel(*data.test_train_split(0.8))
-    # model.plot()
+    # scale features and target 
+    model_data.scale_data(scaling_method='standard', scale_target=True)
 
-    # true_values = model.test_prevalence['WWAvgMgc']
-    # predicted_values = model.predictions['Predicted Value']
+    # correlation 
+    pearson = fs.feature_correlation(
+        model_data.features,
+        method="pearson",
+        prefix=params.prefix,
+        plot=True)
+    
+    spearman = fs.feature_correlation(
+        model_data.features,
+        method="spearman",
+        prefix=params.prefix,
+        plot=True)
 
-    # mse, rmse = model.evaluate(true_values, predicted_values)
-    # print("Mean Squared Error (MSE):", mse)
-    # print("Root Mean Squared Error (RMSE):", rmse)
+    # drop features (hard-coded for now)
+    model_data.drop_features(["S_Pi", 
+                              "E_Pi", 
+                              "M_Pi",
+                              "Abundance_num",
+                              "Abundance_max",
+                              "Abundance_min"])
 
-    # sys.exit()
-
-    # # read data tables
-    # summary = sort_recent_spike(pd.read_csv(summary_file,
-    #     header=0,
-    #     sep="\t"))
-
-    # # lineage = sort_lineage(pd.read_csv(params.lineage,
-    # #     header=0,
-    # #     sep="\t"))
-
-    # # # summarized sub-lineages at different levels 
-    # # level1=sort_normalise_filter(summarize_levels(lineage.copy(), 1), threshold=params.threshold)
-    # # level2=sort_normalise_filter(summarize_levels(lineage.copy(), 2), threshold=params.threshold)
-    # # lineages=sort_normalise_filter(lineage.copy(), threshold=params.threshold)
-
-    # metadata = pd.read_csv(metadata_file,
-    # header=0,
-    # sep="\t")
-    # metadata["Location"] = metadata.Site.astype("str")
-
-    # wwavgmgc = pd.read_csv(nationalavg_file,
-    #     sep=",",
-    #     header=0)
-    # wwavgmgc["Period"] = pd.to_datetime(wwavgmgc["Date7DayEnding"], format='%d/%m/%Y')
-    # wwavgmgc["WWAvgMgc"] = wwavgmgc["WWAvgMgc"].astype("float")
-
-    # # merge with metadata
-    # merged = get_merged(summary, metadata)
-
-    # # get population weighted prevalence
-    # weighted = get_weighted_abundances(merged)
-
-    # # smooth 
-    # smoothed_weighted = sort_lineage(fill_smooth_normalise(weighted, "Weighted Abundance", 7, min_periods=1))
-
-    # print(smoothed_weighted)
-
-    # # Assuming the prevalence data is in a DataFrame called prevalence_df
-    # first_date_abundance = smoothed_weighted['Period'].min()
-    # prevalence_df = wwavgmgc[wwavgmgc['Period'] >= first_date_abundance]
-
-    # # Pivot the lineage abundance data to create a wide format
-    # lineage_abundance_wide = smoothed_weighted.pivot_table(index='Period', columns='Lineage', values='Weighted Abundance')
-    # lineage_abundance_wide.index = pd.to_datetime(lineage_abundance_wide.index)
-
-    # # Resample the wide-format lineage abundance data to daily frequency
-    # lineage_abundance_daily = lineage_abundance_wide.resample('D').asfreq()
-
-    # # Use linear interpolation to fill in missing values
-    # lineage_abundance_daily_interp = lineage_abundance_daily.interpolate(method='linear')
-
-    # # Set the split date for training and testing sets
-    # split_date = lineage_abundance_daily_interp.index[-1]  # The last date with lineage abundance data
-
-    # # Split the lineage abundance data
-    # train_lineage_abundance = lineage_abundance_daily_interp.loc[:split_date]
-    # test_lineage_abundance = None  # There is no test lineage abundance data
-
-    # # Split the total prevalence data
-    # train_total_prevalence = prevalence_df.set_index('Period').loc[:split_date, 'WWAvgMgc']
-    # test_total_prevalence = prevalence_df.set_index('Period').loc[split_date + pd.Timedelta(days=1):, 'WWAvgMgc']
-
-    # print(train_total_prevalence)
-    # print(train_lineage_abundance)
-    # print(test_total_prevalence)
-
-    # # Train the ARIMA model
-    # arima_model = fit_arima(train_total_prevalence, train_lineage_abundance)
-
-    # # Generate predictions for the test data
-    # predictions = predict_arima(arima_model, test_total_prevalence, test_lineage_abundance, prediction_horizon=len(test_total_prevalence))
-
-    # # Print the predictions
-    # print(predictions)
+    # random forest selection 
+    ranks, residuals = fs.feature_selection_RF(
+        model_data.features,
+        model_data.prevalence[params.prevalence_col],
+        prefix=params.prefix,
+        plot=True)
 
 
 def parseArgs():
@@ -211,6 +164,15 @@ def parseArgs():
                         type=str,
                         help='Path to the pre-computed features csv file')
 
+    parser.add_argument('--extra_features', 
+                        type=str, 
+                        default = None, 
+                        help='Path to the csv file with extra features')
+
+    parser.add_argument('--prefix', 
+                        type=str, 
+                        default = "output", 
+                        help='Prefix for output files')
 
     return parser.parse_args()
 

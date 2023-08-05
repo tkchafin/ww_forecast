@@ -48,7 +48,6 @@ class LineageMapper:
         else:
             # if neither provided, then this LineageMapper will only work with fully resolved lineage files
             self.clade_lookup = None
-            self.consensus_barcodes = None
         
         # create consensus_barcodes
         valid_consensus_types = ['mean', 'mode', 'strict']
@@ -57,6 +56,8 @@ class LineageMapper:
 
         if self.clade_lookup is not None:
             self.consensus_barcodes = self.get_consensus_barcodes(consensus_type)
+        else:
+            self.consensus_barcodes = None
 
         # parse BED file 
         if regions:
@@ -395,7 +396,8 @@ class LineageMapper:
         prefix (str): The prefix for the output file names.
         """
         # write consensus barcodes
-        self.consensus_barcodes.to_csv(f"{prefix}_consensus_barcodes.csv")
+        if self.consensus_barcodes is not None:
+            self.consensus_barcodes.to_csv(f"{prefix}_consensus_barcodes.csv")
 
         # write clade map
         if self.clade_lookup is not None:
