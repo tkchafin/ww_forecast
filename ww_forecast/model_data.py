@@ -1,5 +1,7 @@
 import os 
 import sys 
+import warnings
+from typing import List, Union, Optional, Generator, Tuple 
 
 import pandas as pd
 import math
@@ -7,8 +9,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from matplotlib.backends.backend_pdf import PdfPages
-
-from typing import List, Union, Optional, Generator, Tuple 
 
 from . import feature_engineering as fe
 from . import lineage_mapper as lm
@@ -101,6 +101,56 @@ class ModelData:
             self.write_features(self.prefix)
         
         self.check_dates()
+
+
+    def test_train_split(self, test_size=0.2):
+        split_idx = int(len(self.features) * (1 - test_size))
+        
+        X_train = self.features.iloc[:split_idx]
+        X_test = self.features.iloc[split_idx:]
+        
+        y = self.prevalence[self.prevalence_col]
+        y_train = y.iloc[:split_idx]
+        y_test = y.iloc[split_idx:]
+
+        return X_train, X_test, y_train, y_test
+
+
+    def sliding_window_test_train_split(self, window_size, test_size=0.2, step_size=None, n_datasets=None):
+        total_size = len(self.features)
+
+        if n_datasets:
+            total_test = int(test_size * total_size)
+            total_train = total_size - total_test
+            step_size = int((total_train - window_size) / (n_datasets - 1))
+            
+            # Ensure step_size is at least 1
+            if step_size < 1:
+                step_size = 1
+                warnings.warn("Too many datasets requested. Step size set to 1.")
+
+        start = 0
+
+        while start + window_size < total_size:
+            split_idx = start + window_size
+            end = split_idx + int(test_size * total_size)
+
+            if end > total_size:
+                end = total_size
+
+            X_train = self.features.iloc[start:split_idx]
+            X_test = self.features.iloc[split_idx:end]
+            
+            y = self.prevalence[self.prevalence_col]
+            y_train = y.iloc[start:split_idx]
+            y_test = y.iloc[split_idx:end]
+
+            yield X_train, X_test, y_train, y_test
+
+            if step_size:
+                start += step_size
+            else:
+                start += 1
 
 
     def inverse_scale_target(self, data):
