@@ -6,12 +6,14 @@ import numpy as np
 
 import seaborn as sns
 import matplotlib.pyplot as plt
-
-from sklearn.ensemble import RandomForestRegressor
+from kneed import KneeLocator
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.inspection import PartialDependenceDisplay
 from matplotlib.backends.backend_pdf import PdfPages
 
 
-def feature_correlation(data, method='pearson', prefix='correlation', plot=True):
+def feature_correlation(data: pd.DataFrame, method: str = 'pearson', prefix: str = 'correlation', 
+                        plot: bool = True) -> pd.DataFrame:    
     """
     Calculate the correlation matrix and optionally plot it.
     
@@ -36,10 +38,7 @@ def feature_correlation(data, method='pearson', prefix='correlation', plot=True)
         with PdfPages(f"{prefix}_{method}_correlation_heatmap.pdf") as pdf:
             plt.figure(figsize=(12, 10))
             
-            # Custom formatter function for annotations
-            fmt = lambda x: f"{x:.2f}"
-            
-            sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt="",
+            sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt=".2f",
                         annot_kws={"size": 8}, cbar_kws={"shrink": 0.8})
 
             # Reducing title size for a cleaner look
@@ -54,43 +53,88 @@ def feature_correlation(data, method='pearson', prefix='correlation', plot=True)
     
     return corr_matrix
 
-def feature_selection_RF(X, y, n_estimators=100, max_depth=None, min_samples_split=2, 
-                         min_samples_leaf=1, max_features='sqrt', bootstrap=True, max_samples=None, 
-                         prefix="test", plot=True):
-    """
-    Applies Random Forest Regressor for feature selection.
 
-    Args:
-    X (pd.DataFrame): Features.
-    y (pd.Series): Target variable.
-    n_estimators (int, optional): The number of trees in the forest. Defaults to 100.
-    max_depth (int, optional): The maximum depth of the tree. If None, then nodes are expanded until 
-                               all leaves are pure. Defaults to None.
-    min_samples_split (int, optional): The minimum number of samples required to split an internal node.
-                                       Defaults to 2.
-    min_samples_leaf (int, optional): The minimum number of samples required to be at a leaf node. Defaults to 1.
-    max_features (str, optional): The number of features to consider when looking for the best split.
-                                  Can be int, float, string or None. Defaults to 'sqrt'.
-    bootstrap (bool, optional): Whether bootstrap samples are used when building trees. Defaults to True.
-    max_samples (float/int, optional): If bootstrap is True, the number of samples to draw from available samples 
-                                       to train each tree. If None (default), then draw `X.shape[0]` samples.
-    prefix (str, optional): Prefix for output files. Defaults to 'test'.
-    plot (bool, optional): Whether to plot the feature importances and residuals. Defaults to True.
+def feature_selection_RF(X: pd.DataFrame, y: pd.Series, n_trees: int = None, max_trees: int = 1000, 
+                         max_depth: int = None, min_samples_split: int = 2, threads: int = 1,
+                         min_samples_leaf: int = 1, max_features: str = 'sqrt', bootstrap: bool = True, 
+                         max_samples: float = None, pdp_features: int = 3, prefix: str = "test", plot: bool = True) -> tuple:
+    """
+    Applies Random Forest Regressor for feature selection and generates relevant plots.
+
+    Args: 
+    X : pd.DataFrame
+        Features matrix.
+    y : pd.Series
+        Target variable.
+    n_trees : int, optional
+        Number of trees to use without OOB optimization. If set, OOB optimization is skipped. Default is None.
+    max_trees : int, optional
+        Maximum number of trees to consider for OOB optimization. Default is 1000.
+    max_depth : int, optional
+        Maximum depth of the tree. Default is None.
+    min_samples_split : int, optional
+        Minimum number of samples required to split a node. Default is 2.
+    min_samples_leaf : int, optional
+        Minimum number of samples required to be at a leaf node. Default is 1.
+    max_features : str, optional
+        Number of features to consider when looking for the best split. Default is 'sqrt'.
+    bootstrap : bool, optional
+        Whether bootstrap samples are used when building trees. Default is True.
+    max_samples : float or None, optional
+        Number of samples to draw for bootstrapping. Default is None.
+    pdp_features : int, optional
+        Number of top features to consider for partial dependence plot. Default is 3.
+    prefix : str, optional
+        Prefix for saving output files. Default is "test".
+    plot : bool, optional
+        Whether to produce plots. Default is True.
 
     Returns:
-    importances (pd.Series): Sorted feature importances.
-    residuals (pd.Series): Residuals after prediction.
+    tuple:
+        - pd.Series: Sorted feature importances.
+        - pd.Series: Residuals after prediction.
     """
     
-    # Instantiate and fit the random forest regressor
-    rf = RandomForestRegressor(n_estimators=n_estimators, 
-                               max_depth=max_depth, 
-                               min_samples_split=min_samples_split, 
-                               min_samples_leaf=min_samples_leaf, 
-                               max_features=max_features, 
-                               bootstrap=bootstrap, 
-                               max_samples=max_samples)
-    rf.fit(X, y)
+    if n_trees is None:
+        # Define the RF regressor with warm_start=True to grow the number of trees incrementally
+        rf = RandomForestRegressor(
+            warm_start=True, 
+            oob_score=True, 
+            bootstrap=bootstrap, 
+            max_depth=max_depth,
+            n_jobs=threads,
+            min_samples_split=min_samples_split, 
+            min_samples_leaf=min_samples_leaf,
+            max_features=max_features, 
+            max_samples=max_samples)
+
+        oob_errors = []
+        for i in range(1, max_trees + 1):
+            rf.set_params(n_estimators=i)
+            rf.fit(X, y)
+            oob_error = 1 - rf.oob_score_
+            oob_errors.append(oob_error)
+            
+        # Identify optimal number of trees using the Kneedle algorithm
+        kneedle = KneeLocator(range(1, max_trees+1), oob_errors, curve='convex', direction='decreasing')
+        optimal_trees = kneedle.elbow
+
+        # Rerun RF with optimal number of trees (without warm_start to finalize the model)
+        rf.set_params(n_estimators=optimal_trees, warm_start=False)
+        rf.fit(X, y)
+    else:
+        optimal_trees = n_trees
+        rf = RandomForestRegressor(
+            n_estimators=optimal_trees, 
+            max_depth=max_depth, 
+            n_jobs=threads,
+            min_samples_split=min_samples_split, 
+            min_samples_leaf=min_samples_leaf, 
+            max_features=max_features, 
+            bootstrap=bootstrap, 
+            max_samples=max_samples)
+        rf.fit(X, y)
+        oob_errors = None  # Set to None since we don't compute them in this case
 
     # Predictions
     y_pred = rf.predict(X)
@@ -135,4 +179,30 @@ def feature_selection_RF(X, y, n_estimators=100, max_depth=None, min_samples_spl
             pdf.savefig()
             plt.close()
 
+            # PDP for top features
+            top_features = ranks.index[:pdp_features].tolist()
+            PartialDependenceDisplay.from_estimator(
+                rf, 
+                X, 
+                top_features, 
+                kind='both')
+            plt.suptitle(f"PDP for top {pdp_features} features", y=1.05)
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+
+            # OOB error rate plot
+            if oob_errors is not None:
+                plt.figure(figsize=(10, 5))
+                plt.plot(range(1, max_trees+1), oob_errors, label="OOB Error Rate")
+                plt.axvline(optimal_trees, color='red', linestyle='--', label=f"Optimal trees: {optimal_trees}")
+                plt.xlabel("Number of Trees")
+                plt.ylabel("OOB Error Rate")
+                plt.title("OOB Error Rate vs. Number of Trees")
+                plt.legend()
+                plt.tight_layout()
+                pdf.savefig()
+                plt.close()
+
     return ranks, residuals
+

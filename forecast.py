@@ -75,16 +75,47 @@ def main():
     model_data.drop_features(["S_Pi", 
                               "E_Pi", 
                               "M_Pi",
+                              "N_Pi",
                               "Abundance_num",
                               "Abundance_max",
-                              "Abundance_min"])
+                              "Abundance_min", 
+                              "Advantage_min",
+                              "Advantage_max", 
+                              "Abundance_std", 
+                              "Abundance_diversity", 
+                              "Advantage_median",
+                              "Advantage_std", 
+                              "Advantage_mean"])
 
-    # random forest selection 
+    # correlation after feature removal 
+    pearson = fs.feature_correlation(
+        model_data.features,
+        method="pearson",
+        prefix=params.prefix+"_post",
+        plot=True)
+    
+    spearman = fs.feature_correlation(
+        model_data.features,
+        method="spearman",
+        prefix=params.prefix+"_post",
+        plot=True)
+
+    # variable importance via random forest regression  
     ranks, residuals = fs.feature_selection_RF(
         model_data.features,
         model_data.prevalence[params.prevalence_col],
         prefix=params.prefix,
+        n_trees=1000,
+        pdp_features=6,
+        max_samples=0.5,
+        bootstrap=True,
+        max_depth=20,
+        min_samples_leaf=2,
+        threads=6,
         plot=True)
+    
+    #############################################################
+    # 3. Model fitting and prediction 
 
 
 def parseArgs():
