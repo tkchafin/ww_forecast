@@ -2,6 +2,12 @@ import os
 import sys 
 
 import pandas as pd
+import math
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from matplotlib.backends.backend_pdf import PdfPages
+
 from typing import List, Union, Optional, Generator, Tuple 
 
 from . import feature_engineering as fe
@@ -54,6 +60,8 @@ class ModelData:
         self.serial_interval = serial_interval
         self.window_width = window_width
         self.prefix = prefix
+        self.features_scaler=None
+        self.target_scaler=None
 
         # pre-processing 
         if self.peak_threshold > 0.0:
@@ -75,13 +83,15 @@ class ModelData:
         else:
             # load features from file
             self.features = pd.read_csv(features_file, index_col=0, header=0)
+            self.features.index = pd.to_datetime(self.features.index, format='%Y-%m-%d')
 
         # split prevalence data 
         features_start_date = self.features.index.min()
         features_end_date = self.features.index.max()
 
-        self.validation_prevalence = self.prevalence[self.prevalence['Date'] > features_end_date]
-        self.prevalence = self.prevalence[(self.prevalence['Date'] >= features_start_date) & (self.prevalence['Date'] <= features_end_date)]
+        self.prevalence.set_index('Date', inplace=True)
+        self.validation_prevalence = self.prevalence[self.prevalence.index > features_end_date]
+        self.prevalence = self.prevalence[(self.prevalence.index >= features_start_date) & (self.prevalence.index <= features_end_date)]
 
         # write outputs 
         self.write(self.prefix)
@@ -90,6 +100,65 @@ class ModelData:
         if features_file is None:
             self.write_features(self.prefix)
         
+        self.check_dates()
+
+
+    def inverse_scale_target(self, data):
+        """
+        Inversely scales the target using the target scaler.
+        
+        Args:
+        data (pd.DataFrame): The target data to be inversely scaled.
+        
+        Returns:
+        pd.DataFrame: The inversely scaled target data.
+        """
+        if self.target_scaler is not None:
+            return self.target_scaler.inverse_transform(data)
+        return data
+
+
+    def inverse_scale_features(self, data):
+        """
+        Inversely scales the features using the features scaler.
+        
+        Args:
+        data (pd.DataFrame): The features data to be inversely scaled.
+        
+        Returns:
+        pd.DataFrame: The inversely scaled features data.
+        """
+        return self.features_scaler.inverse_transform(data)
+
+
+    def scale_data(self, scaling_method='standard', scale_target=True):
+        """
+        Scales the features and optionally the target based on the given scaling method.
+        
+        Args:
+        scaling_method (str): The type of scaling to apply. Either 'standard' (default) or 'min-max'.
+        scale_target (bool): Whether or not to scale the target. Default is True.
+        """
+        if scaling_method == 'standard':
+            self.features_scaler = StandardScaler()
+        elif scaling_method == 'min-max':
+            self.features_scaler = MinMaxScaler()
+        else:
+            raise ValueError("scaling_method should be either 'standard' or 'min-max'")
+        
+        # Apply the scaler to the features
+        self.features[self.features.columns] = self.features_scaler.fit_transform(self.features)
+        
+        if scale_target:
+            if scaling_method == 'standard':
+                self.target_scaler = StandardScaler()
+            elif scaling_method == 'min-max':
+                self.target_scaler = MinMaxScaler()
+            
+            self.prevalence[self.prevalence_col] = self.target_scaler.fit_transform(self.prevalence[[self.prevalence_col]])
+        else:
+            self.target_scaler = None
+
 
     def drop_features(self, features_to_remove):
         """
@@ -150,13 +219,13 @@ class ModelData:
         return(features_df)
 
 
-    def interpolation(self, df: pd.DataFrame, var: str, group: Optional[str] = None) -> pd.DataFrame:
+    def interpolation(self, df: pd.DataFrame, var: Optional[str] = None, group: Optional[str] = None) -> pd.DataFrame:
         """
         Performs linear interpolation for missing dates in the data.
         
         Args:
         df (pd.DataFrame): Data to be interpolated.
-        var (str): Variable column to be interpolated.
+        var (str, optional): Variable column to be interpolated. If None, applies to all columns except 'Date'.
         group (str, optional): If given, interpolation will be done per group. Defaults to None.
         
         Returns:
@@ -167,7 +236,11 @@ class ModelData:
             df.set_index('Date', inplace=True)
             date_index = pd.date_range(start=df.index.min(), end=df.index.max())
             df = df.reindex(date_index)
-            df[var] = df[var].interpolate(method=self.interpolation_method)
+            if var is None:
+                for col in df.columns:
+                    df[col] = df[col].interpolate(method=self.interpolation_method)
+            else:
+                df[var] = df[var].interpolate(method=self.interpolation_method)
             df.reset_index(inplace=True)
             if "index" in df.columns:
                 df.rename(columns={"index": "Date"}, inplace=True)
@@ -180,11 +253,15 @@ class ModelData:
             lineage_index = df.index.get_level_values(group).unique()
             multi_index = pd.MultiIndex.from_product([date_index, lineage_index], names=['Date', group])
             df = df.reindex(multi_index)
-            df[var] = df.groupby(level=group)[var].transform(lambda group: group.interpolate(method=self.interpolation_method))
+            if var is None:
+                for col in df.columns:
+                    df[col] = df.groupby(level=group)[col].transform(lambda group: group.interpolate(method=self.interpolation_method))
+            else:
+                df[var] = df.groupby(level=group)[var].transform(lambda group: group.interpolate(method=self.interpolation_method))
             df.reset_index(['Date', group], inplace=True)  # reset the specified levels of the index
 
         return df
- 
+
 
     def normalise_generic(self, df, group, var):
         """
@@ -352,9 +429,142 @@ class ModelData:
         self.prevalence.to_csv(f"{prefix}_prevalence.csv", index=True)
 
 
+    def add_features(self, extra_features_file: str, impute: bool = False):
+        """
+        Adds additional features to the model's feature set.
+        
+        Args:
+        extra_features_file (str): Path to a CSV file containing additional features. 
+                                This file should have the same 'Date' format as the original features.
+        impute (bool): If True, imputes missing values in the new features. Defaults to False.
+        """
+        additional_features = self._read_extra_features(extra_features_file)
+
+        if impute:
+            # If the Date column is the index, reset it to be a normal column
+            if additional_features.index.name == 'Date':
+                additional_features.reset_index(inplace=True)
+
+            # Apply interpolation to all columns except 'Date'
+            additional_features = self.interpolation(additional_features)
+
+            # Set 'Date' column back to index
+            additional_features.set_index('Date', inplace=True)
+
+        # Ensure the additional features have the same index as the original features dataframe
+        additional_features = additional_features.reindex(self.features.index)
+
+        # Join additional features onto the original features dataframe
+        self.features = self.features.join(additional_features)
+
+
+    def _read_extra_features(self, file: str):
+        df = pd.read_csv(file, parse_dates=['Date'])
+        df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d')
+        df.set_index('Date', inplace=True)
+        return df
+
+
     def write_features(self, prefix: str):
         output_file = f'{prefix}_features.csv'
         self.features.to_csv(output_file, index=True)
+
+
+    def plot_features_pairwise(self):
+        """
+        Plots pairwise comparison between each feature, showing linear regression on one triangle and density contours on the other.
+        """
+        # Get list of features
+        features = list(self.features.columns)
+
+        # Create pairwise grids
+        g = sns.PairGrid(self.features[features])
+
+        # Map a regression plot to the lower triangle
+        g.map_lower(sns.regplot, scatter_kws={'s': 5})
+
+        # Map a density contour plot to the upper triangle
+        g.map_upper(sns.kdeplot, fill=True)
+
+        # Map a histogram to the diagonal
+        g.map_diag(sns.histplot)
+
+        # Save the figure
+        plt.savefig(f'{self.prefix}_pairwise_features.pdf')
+
+    def plot_features_vs_prevalence(self):
+        """
+        Plots each feature against prevalence on separate subplots.
+        """
+        features = list(self.features.columns)
+        n = len(features)
+
+        fig = plt.figure(figsize=(10, n * 5))
+
+        for i, feature in enumerate(features, 1):
+            ax = plt.subplot(n, 1, i)
+            sns.regplot(x=self.features[feature], y=self.prevalence[self.prevalence_col], ax=ax)
+            ax.set_title(f'{feature} vs Prevalence')
+
+        plt.tight_layout()
+
+        # Save the plot as a PDF file
+        plt.savefig(f'{self.prefix}_features_vs_prevalence.pdf')
+
+        # Close the figure to free up memory
+        plt.close(fig)
+
+
+    def plot_features_vs_prevalence_timeseries(self):
+        """
+        Plots each feature and prevalence as a time-series.
+        """
+        features = list(self.features.columns)
+        n = len(features)
+
+        fig, axes = plt.subplots(n, 1, figsize=(10, n * 5))
+
+        for i, feature in enumerate(features):
+            ax = axes[i]
+            ax2 = ax.twinx()
+
+            line1, = ax.plot(self.features.index, self.features[feature], color='blue')
+            line2, = ax2.plot(self.prevalence.index, self.prevalence[self.prevalence_col], color='green')
+
+            ax.set_title(f'{feature} and Prevalence over time')
+            ax.legend([line1, line2], [feature, 'Prevalence'], loc='upper left')
+
+        plt.tight_layout()
+
+        # Save the plot as a PDF file
+        plt.savefig(f'{self.prefix}_features_vs_prevalence_timeseries.pdf')
+
+        # Close the figure to free up memory
+        plt.close(fig)
+
+
+    def check_dates(self):
+        """
+        Checks if self.features and self.prevalence have the same dates.
+        """
+        # Get the set of dates from both DataFrames
+        feature_dates = set(self.features.index)
+        prevalence_dates = set(self.prevalence.index)
+
+        # Check if the sets are equal
+        if feature_dates != prevalence_dates:
+            # Find dates that are in feature_dates but not in prevalence_dates
+            missing_in_prevalence = feature_dates.difference(prevalence_dates)
+
+            # Find dates that are in prevalence_dates but not in feature_dates
+            missing_in_features = prevalence_dates.difference(feature_dates)
+
+            print("Dates missing in prevalence data: ", sorted(list(missing_in_prevalence)))
+            print("Dates missing in features data: ", sorted(list(missing_in_features)))
+
+            raise ValueError("Feature and prevalence data do not have the same dates. Please align the data.")
+
+
 
     # def plot(self, train_proportion=None):
     #     fig = plt.figure(figsize=(12, 6))
