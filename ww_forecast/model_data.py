@@ -3,6 +3,7 @@ import sys
 import warnings
 from typing import List, Union, Optional, Generator, Tuple 
 
+import torch
 import pandas as pd
 import math
 import seaborn as sns
@@ -153,6 +154,71 @@ class ModelData:
                 start += 1
 
 
+    def get_tensors(self):
+            features_tensor = torch.tensor(self.features.values, dtype=torch.float32)
+            prevalence_tensor = torch.tensor(self.prevalence[self.prevalence_col].values, dtype=torch.float32)
+            return features_tensor, prevalence_tensor
+
+
+    def unfold_sequences(self, window_width, forecast_window=None, concat=True):
+        """
+        Create sequences using the unfold method.
+
+        :param window_width: The width of the window for features and prevalence.
+        :param forecast_window: The number of days in the future to predict. If None, will predict the very next day.
+        :param concat: Whether to concatenate prevalence data to feature data.
+        :return: features_tensor_stack, target_tensor_stack, test_stack, test_target.
+        """
+        
+        features_tensor, prevalence_tensor = self.get_tensors()
+
+        if hasattr(self, 'validation_prevalence'):
+            # Convert self.validation_prevalence to a tensor and append it to prevalence_tensor
+            validation_tensor = torch.tensor(self.validation_prevalence.values, dtype=torch.float32)
+            prevalence_tensor = torch.cat([prevalence_tensor, validation_tensor])
+
+        features_list = []
+        target_list = []
+        test_target_list = []
+
+        if forecast_window is None:
+            forecast_window = 1
+
+        L = len(features_tensor)
+        test_windows_list = []
+        
+        for i in range(L - window_width):
+            feature_seq = features_tensor[i:i+window_width]
+            prevalence_seq = prevalence_tensor[i:i+window_width].unsqueeze(-1)  # Add an extra dimension
+
+            if i in range(L - window_width - forecast_window, L - window_width):
+                if concat:
+                    combined_seq = torch.cat((feature_seq, prevalence_seq), dim=-1)
+                    test_windows_list.append(combined_seq)
+                test_target_seq = prevalence_tensor[i+window_width:i+window_width+forecast_window]
+                test_target_list.append(test_target_seq)
+            else:
+                if concat:
+                    combined_seq = torch.cat((feature_seq, prevalence_seq), dim=-1)
+                    features_list.append(combined_seq)
+                    target_seq = prevalence_tensor[i+window_width:i+window_width+forecast_window]
+                    target_list.append(target_seq)
+                else:
+                    features_list.append(feature_seq)
+                    if forecast_window == 1:
+                        target_seq = prevalence_seq[-1:]
+                    else:
+                        target_seq = prevalence_tensor[i+window_width:i+window_width+forecast_window]
+                    target_list.append(target_seq)
+
+        features_tensor_stack = torch.stack(features_list)
+        target_tensor_stack = torch.stack(target_list)
+        test_stack = torch.stack(test_windows_list)
+        test_target = torch.stack(test_target_list)
+
+        return features_tensor_stack, target_tensor_stack, test_stack, test_target
+
+
     def inverse_scale_target(self, data):
         """
         Inversely scales the target using the target scaler.
@@ -206,6 +272,10 @@ class ModelData:
                 self.target_scaler = MinMaxScaler()
             
             self.prevalence[self.prevalence_col] = self.target_scaler.fit_transform(self.prevalence[[self.prevalence_col]])
+            self.validation_prevalence = pd.Series(
+                self.target_scaler.fit_transform(self.validation_prevalence.values).ravel(), 
+                index=self.validation_prevalence.index)
+
         else:
             self.target_scaler = None
 

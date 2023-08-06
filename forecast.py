@@ -4,10 +4,11 @@ import sys
 import argparse
 import pandas as pd
 from pathlib import Path
-
+import torch
 from ww_forecast.model_data import ModelData
 from ww_forecast.lineage_mapper import LineageMapper
 import ww_forecast.feature_selection as fs
+from ww_forecast.forecasting_models import Seq2SeqLSTM
 
 def main():
 
@@ -116,7 +117,81 @@ def main():
     
     #############################################################
     # 3. Model fitting and prediction 
+    x, y, x_validation, y_validation = model_data.unfold_sequences(
+        window_width=60,
+        forecast_window=7,
+        concat=True)
+    train_ratio = 0.8  # or whatever ratio you prefer
+    n_train = int(len(y) * train_ratio)
 
+    x_train = x[:n_train]
+    y_train = y[:n_train]
+    x_test = x[n_train:]
+    y_test = y[n_train:]
+    print("x_train:",x_train.shape)
+    print("y_train:",y_train.shape)
+    print("x_test:",x_test.shape)
+    print("y_test:",y_test.shape)
+    print("x_validation",x_validation.shape)
+    print("y_validation:",y_validation.shape)
+    #x,y = model_data.get_tensors()
+
+    # train LSTM model 
+    config = {
+        'num_layers': (1, 3),
+        'hidden_size': (2, 120),
+        'dropout': (0.0001, 0.01),
+        'lr': (1e-3, 0.01),
+        'weight_decay': (1e-4, 1e-2),
+        'l1_lambda': (1e-5, 1e-3),
+        'epochs': 100, 
+        'patience': 20
+    }
+
+    # tune hyperparameters 
+    model = Seq2SeqLSTM(x_train, y_train, x_test, y_test)
+    model.optimize(n_trials=10, config=config)
+    model.plot_trials(params.prefix)
+
+    # Update the data
+    model.update_data(
+        torch.cat((x_train, x_test)),
+        torch.cat((y_train, y_test)),
+        x_validation,
+        y_validation
+    )
+    
+
+    # now use model.best_params (set by optimise) to train model on full dataset
+    val_loss =model.fit(
+        params=model.best_params, 
+        epochs=config["epochs"], 
+        patience=config["patience"])
+    print(val_loss)
+    
+    # plot results of full model training 
+    # set prefix as e.g., params.prefix_fullModel
+
+    # generate predictions for full set 
+    # average these per day 
+    # plot prediction vs observed 
+    #   - pairwise
+    #   - time-series line plot 
+
+
+
+""" 
+lvl1 w30 f1
+Value:  0.15471069514751434
+Params: 
+    num_layers: 1
+    hidden_size: 67
+    dropout: 0.0033664547256912107
+    lr: 0.0036114412598879176
+    weight_decay: 0.005012975034408911
+    l1_lambda: 0.00040347736681163533
+
+"""
 
 def parseArgs():
     parser = argparse.ArgumentParser(description='Process command-line arguments.')
